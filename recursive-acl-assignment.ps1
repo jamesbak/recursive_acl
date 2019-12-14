@@ -33,7 +33,7 @@ $headers = @{
     Authorization = "Bearer " + $token.access_token
 }
 $baseUri = "https://$accountName.dfs.core.windows.net/$container"
-$baseListUri = $baseUri + "`?resource=filesystem&recursive=true&maxResults=10&upn=true"
+$baseListUri = $baseUri + "`?resource=filesystem&recursive=true&upn=true"
 if ($rootDir -ne $null) {
     $baseListUri = $baseListUri + "&directory=$rootDir"
 }
