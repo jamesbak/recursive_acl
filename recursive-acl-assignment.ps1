@@ -55,7 +55,7 @@ do {
     if ($null -ne $continuationToken) {
         $listUri = $listUri + "&continuation=" + [System.Web.HttpUtility]::UrlEncode($continuationToken)
     }
-    $listResp = curl -Method Get -Headers $headers $listUri
+    $listResp = Invoke-WebRequest -Method Get -Headers $headers $listUri
     if ($listResp.StatusCode -eq 200) {
         ($listResp.Content | ConvertFrom-Json).paths | % {
             Write-Output "Processing: $($_.name)" 
@@ -67,53 +67,65 @@ do {
             }
             # If we're merging an entry into the existing file's ACL, then we need to retrieve the full ACL first
             if ($mergePrincipal -ne $null) {
-                $aclResp = curl -Method Head -Headers $headers "$baseUri/$($_.name)`?action=getAccessControl&upn=true"
-                $currentAcl = $aclResp.Headers["x-ms-acl"]
-                # Check if we need to update the ACL
-                $entryFound = $false
-                $entryModified = $false
-                # Process the ACL. Format of each entry is; [scope:][type]:[id]:[permissions]
-                $updatedEntries = $currentAcl.Split(',') | % { 
-                    $entry = $_.split(':')
-                    # handle 'default' scope
-                    $doOutput = $true
-                    $idxOffset = 0
-                    if ($entry.Length -eq 4) {
-                        $idxOffset = 1
-                    }
-                    if ($entry[$idxOffset + 0] -eq $mergeType -and $entry[$idxOffset + 1] -eq $mergePrincipal) {
-                        $entryFound = $true
-                        if ($removeEntry) {
-                            # Remove the entry by not outputing if from this expression
-                            $doOutput = $false
-                            $entryModified = $true
+                $aclResp = Invoke-WebRequest -Method Head -Headers $headers "$baseUri/$($_.name)`?action=getAccessControl&upn=true"
+                if ($aclResp.StatusCode -eq 200) {
+                    $currentAcl = $aclResp.Headers["x-ms-acl"]
+                    # Check if we need to update the ACL
+                    $entryFound = $false
+                    $entryModified = $false
+                    # Process the ACL. Format of each entry is; [scope:][type]:[id]:[permissions]
+                    $updatedEntries = $currentAcl.Split(',') | % { 
+                        $entry = $_.split(':')
+                        # handle 'default' scope
+                        $doOutput = $true
+                        $idxOffset = 0
+                        if ($entry.Length -eq 4) {
+                            $idxOffset = 1
                         }
-                        elseif ($entry[$idxOffset + 2] -ne $mergePerms) {
-                            $entry[$idxOffset + 2] = $mergePerms
-                            $_ = $entry -join ':'
-                            $entryModified = $true
+                        if ($entry[$idxOffset + 0] -eq $mergeType -and $entry[$idxOffset + 1] -eq $mergePrincipal) {
+                            $entryFound = $true
+                            if ($removeEntry) {
+                                # Remove the entry by not outputing if from this expression
+                                $doOutput = $false
+                                $entryModified = $true
+                            }
+                            elseif ($entry[$idxOffset + 2] -ne $mergePerms) {
+                                $entry[$idxOffset + 2] = $mergePerms
+                                $_ = $entry -join ':'
+                                $entryModified = $true
+                            }
+                        }
+                        if ($doOutput) {
+                            $_
+                        }
+                    } 
+                    if ($entryFound -eq $true -and $entryModified -eq $true) {
+                        $updatedAcl = $updatedEntries -join ','
+                    } elseif ($entryFound -eq $true) {
+                        $updatedAcl = $null
+                    } elseif ($removeEntry -ne $true) {
+                        $updatedAcl = "$currentAcl,$mergeType`:$mergePrincipal`:$mergePerms"
+                        if ($_.isDirectory) {
+                            $updatedAcl = $updatedAcl + ",default`:$mergeType`:$mergePrincipal`:$mergePerms"
                         }
                     }
-                    if ($doOutput) {
-                        $_
-                    }
-                } 
-                if ($entryFound -eq $true -and $entryModified -eq $true) {
-                    $updatedAcl = $updatedEntries -join ','
-                } elseif ($entryFound -eq $true) {
+                }
+                else {
+                    Write-Error "Failed to retrieve existing ACL for $($_.name). Details: " + $aclResp
                     $updatedAcl = $null
-                } elseif ($removeEntry -ne $true) {
-                    $updatedAcl = "$currentAcl,$mergeType`:$mergePrincipal`:$mergePerms"
-                    if ($_.isDirectory) {
-                        $updatedAcl = $updatedAcl + ",default`:$mergeType`:$mergePrincipal`:$mergePerms"
-                    }
                 }
             }
             if ($updatedAcl -ne $null) {
                 Write-Output "Updating ACL for: $($_.name)"
-                $setAclResp = curl -Method Patch -Headers ($headers + @{"x-ms-acl" = $updatedAcl}) "$baseUri/$($_.name)`?action=setAccessControl"
+                $setAclResp = Invoke-WebRequest -Method Patch -Headers ($headers + @{"x-ms-acl" = $updatedAcl}) "$baseUri/$($_.name)`?action=setAccessControl"
+                if ($setAclResp.StatusCode -ge 300) {
+                    Write-Error "Failed to update ACL for $($_.name). Details: " + $setAclResp
+                }
             }
         }
         $continuationToken = $listResp.Headers["x-ms-continuation"]
     }
-} while ($listResp.StatusCode -eq 200 -and $continuationToken -ne $null)
+    else {
+        Write-Error "Failed to list directories and files. Details: " + $listResp
+    }
+} while ($listResp.StatusCode -eq 200 -and $null -ne $continuationToken)
