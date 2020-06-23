@@ -43,6 +43,7 @@ $baseListUri = $baseUri + "`?resource=filesystem&recursive=true&upn=true&maxResu
 if ($null -ne $rootDir) {
     $baseListUri = $baseListUri + "&directory=$rootDir"
 }
+$addRootDir = $null -eq $rootDir -or $rootDir -eq "/"
 # If we have an absolute ACL, we actually need 2 versions; 1 for directories (containing default perms) & 1 for files without default perms
 if ($null -ne $absoluteAcl) {
     $entries = $absoluteAcl.Split(',') | ForEach-Object {
@@ -201,11 +202,20 @@ do {
     try {
         Reset-TokenExpiry $itemParams
         $listResp = Invoke-WebRequest -Method Get -Headers $itemParams.requestHeaders $listUri
+        $items = ($listResp.Content | ConvertFrom-Json).paths
+        if ($addRootDir) {
+            $rootDirEntry = [pscustomobject]@{
+                name = '/'
+                isDirectory = $true
+            }
+            $items = @($rootDirEntry) + $items
+            $addRootDir = $false
+        }
         if ($useRunspaces) {
             # Dispatch this list to a new runspace
             $ps = [powershell]::Create().
                 AddScript($scriptBlock).
-                AddArgument(($listResp.Content | ConvertFrom-Json).paths).
+                AddArgument($items).
                 AddArgument($itemParams)
             $ps.RunspacePool = $runspacePool
             $runSpace = New-Object -TypeName psobject -Property @{
@@ -215,7 +225,7 @@ do {
             $runSpaces.Add($runSpace) | Out-Null
         }
         else {
-            Invoke-Command -ScriptBlock $scriptBlock -ArgumentList @(($listResp.Content | ConvertFrom-Json).paths, $itemParams)
+            Invoke-Command -ScriptBlock $scriptBlock -ArgumentList @($items, $itemParams)
         }
 
         $continuationToken = $listResp.Headers["x-ms-continuation"]
